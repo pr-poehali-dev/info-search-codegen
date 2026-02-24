@@ -24,12 +24,13 @@ interface SearchResult {
 }
 
 type ToolMode = "chat" | "search" | "code" | "analyze";
+type ModelFilter = "all" | "free" | "paid";
 
-const TOOL_MODES: { id: ToolMode; label: string; icon: string; placeholder: string; description: string }[] = [
-  { id: "chat", label: "Чат", icon: "MessageCircle", placeholder: "Спроси что угодно...", description: "Общение с ИИ" },
-  { id: "search", label: "Поиск", icon: "Globe", placeholder: "Что найти в интернете?", description: "Поиск в интернете" },
-  { id: "code", label: "Код", icon: "Code2", placeholder: "Опиши, какой код нужен...", description: "Генерация кода" },
-  { id: "analyze", label: "Анализ", icon: "Sparkles", placeholder: "Что нужно проанализировать?", description: "Анализ информации" },
+const TOOL_MODES: { id: ToolMode; label: string; icon: string; placeholder: string }[] = [
+  { id: "chat", label: "Чат", icon: "MessageCircle", placeholder: "Спроси что угодно..." },
+  { id: "search", label: "Поиск", icon: "Globe", placeholder: "Что найти в интернете?" },
+  { id: "code", label: "Код", icon: "Code2", placeholder: "Опиши, какой код нужен..." },
+  { id: "analyze", label: "Анализ", icon: "Sparkles", placeholder: "Что нужно проанализировать?" },
 ];
 
 const QUICK_ACTIONS = [
@@ -46,9 +47,12 @@ function formatCtx(n: number): string {
 }
 
 function formatPrice(price: number): string {
-  if (price <= 0) return "Free";
+  if (price <= 0) return "Бесплатно";
+  if (price < 0.00001) return `$${(price * 1_000_000).toFixed(4)}/M`;
   return `$${(price * 1_000_000).toFixed(2)}/M`;
 }
+
+const DEFAULT_MODEL = "google/gemini-2.0-flash-001";
 
 const Index = () => {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -59,13 +63,17 @@ const Index = () => {
 
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
-  const [selectedModel, setSelectedModel] = useState("google/gemini-2.0-flash-001");
+  const [selectedModel, setSelectedModel] = useState(DEFAULT_MODEL);
   const [contextLimit, setContextLimit] = useState(40);
   const [maxTokens, setMaxTokens] = useState(8192);
   const [autoScroll, setAutoScroll] = useState(true);
   const [showLineNumbers, setShowLineNumbers] = useState(true);
+  const [autoFallbackFree, setAutoFallbackFree] = useState(true);
+
   const [modelSearch, setModelSearch] = useState("");
+  const [modelFilter, setModelFilter] = useState<ModelFilter>("all");
   const [showSettings, setShowSettings] = useState(false);
+  const [showModelPicker, setShowModelPicker] = useState(false);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -83,10 +91,11 @@ const Index = () => {
     setModelsLoading(true);
     try {
       const res = await fetch(MODELS_URL);
+      if (!res.ok) throw new Error("Failed to fetch models");
       const data = await res.json();
       setModels(data.models || []);
-    } catch {
-      console.error("Failed to load models");
+    } catch (err) {
+      console.error("Failed to load models:", err);
     } finally {
       setModelsLoading(false);
     }
@@ -96,6 +105,13 @@ const Index = () => {
     loadModels();
   }, [loadModels]);
 
+  const findFreeFallback = useCallback((): string | null => {
+    const freeModels = models.filter((m) => m.prompt_price <= 0 && m.context_length > 0);
+    if (freeModels.length === 0) return null;
+    freeModels.sort((a, b) => b.context_length - a.context_length);
+    return freeModels[0].id;
+  }, [models]);
+
   const doWebSearch = async (query: string): Promise<SearchResult[]> => {
     try {
       const res = await fetch(SEARCH_URL, {
@@ -103,6 +119,7 @@ const Index = () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ query }),
       });
+      if (!res.ok) return [];
       const data = await res.json();
       return data.results || [];
     } catch {
@@ -127,73 +144,98 @@ const Index = () => {
     setInput("");
     setIsTyping(true);
 
-    try {
-      let finalContent = text.trim();
-      let searchResults: SearchResult[] = [];
+    let modelToUse = selectedModel;
 
-      if (activeMode === "search") {
-        searchResults = await doWebSearch(text.trim());
-        if (searchResults.length > 0) {
-          const searchContext = searchResults
-            .map((r, i) => `[${i + 1}] "${r.title}" — ${r.snippet} (${r.url})`)
-            .join("\n");
-          finalContent = `Пользователь попросил найти: "${text.trim()}"
+    const attemptChat = async (model: string, isRetry: boolean): Promise<void> => {
+      try {
+        let finalContent = text.trim();
+        let searchResults: SearchResult[] = [];
+
+        if (activeMode === "search" && !isRetry) {
+          searchResults = await doWebSearch(text.trim());
+          if (searchResults.length > 0) {
+            const searchContext = searchResults
+              .map((r, i) => `[${i + 1}] "${r.title}" — ${r.snippet} (${r.url})`)
+              .join("\n");
+            finalContent = `Пользователь попросил найти: "${text.trim()}"
 
 Результаты веб-поиска:
 ${searchContext}
 
-Пожалуйста, проанализируй эти результаты и дай полный ответ на запрос пользователя. Укажи источники.`;
-        }
-      } else if (activeMode === "code") {
-        finalContent = `Напиши код: ${text.trim()}
+Проанализируй эти результаты и дай полный ответ на запрос пользователя. Укажи источники.`;
+          }
+        } else if (activeMode === "code") {
+          finalContent = `Напиши код: ${text.trim()}
 
 Используй правильное форматирование с блоками кода. Код должен быть production-ready.`;
-      } else if (activeMode === "analyze") {
-        finalContent = `Проведи глубокий анализ: ${text.trim()}
+        } else if (activeMode === "analyze") {
+          finalContent = `Проведи глубокий анализ: ${text.trim()}
 
 Структурируй ответ с заголовками, пунктами и выводами.`;
+        }
+
+        const chatMessages = updatedMessages.map((m) => ({
+          role: m.role,
+          content: m.role === "user" && m.id === userMsg.id ? finalContent : m.content,
+        }));
+
+        const res = await fetch(CHAT_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            messages: chatMessages,
+            model: model,
+            max_tokens: maxTokens,
+            context_limit: contextLimit,
+          }),
+        });
+
+        const data = await res.json();
+
+        if (!res.ok) {
+          if (autoFallbackFree && !isRetry && model !== DEFAULT_MODEL) {
+            const fallback = findFreeFallback();
+            if (fallback && fallback !== model) {
+              setSelectedModel(fallback);
+              modelToUse = fallback;
+              const fallbackNote: Message = {
+                id: crypto.randomUUID(),
+                role: "assistant",
+                content: `Модель ${model} недоступна. Переключаюсь на бесплатную модель...`,
+                timestamp: new Date(),
+                mode: activeMode,
+              };
+              setMessages((prev) => [...prev, fallbackNote]);
+              await attemptChat(fallback, true);
+              return;
+            }
+          }
+          throw new Error(data.error || `HTTP ${res.status}`);
+        }
+
+        const assistantMsg: Message = {
+          id: crypto.randomUUID(),
+          role: "assistant",
+          content: data.content,
+          timestamp: new Date(),
+          mode: activeMode,
+          searchResults: searchResults.length > 0 ? searchResults : undefined,
+        };
+        setMessages((prev) => [...prev, assistantMsg]);
+      } catch (err: unknown) {
+        const errorMsg: Message = {
+          id: crypto.randomUUID(),
+          role: "assistant",
+          content: `Ошибка: ${err instanceof Error ? err.message : "не удалось получить ответ"}`,
+          timestamp: new Date(),
+          mode: activeMode,
+        };
+        setMessages((prev) => [...prev, errorMsg]);
       }
+    };
 
-      const chatMessages = updatedMessages.map((m) => ({
-        role: m.role,
-        content: m.role === "user" && m.id === userMsg.id ? finalContent : m.content,
-      }));
-
-      const res = await fetch(CHAT_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          messages: chatMessages,
-          model: selectedModel,
-          max_tokens: maxTokens,
-          context_limit: contextLimit,
-        }),
-      });
-
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-
-      const assistantMsg: Message = {
-        id: crypto.randomUUID(),
-        role: "assistant",
-        content: data.content,
-        timestamp: new Date(),
-        mode: activeMode,
-        searchResults: searchResults.length > 0 ? searchResults : undefined,
-      };
-      setMessages((prev) => [...prev, assistantMsg]);
-    } catch (err: unknown) {
-      const errorMsg: Message = {
-        id: crypto.randomUUID(),
-        role: "assistant",
-        content: `Ошибка: ${err instanceof Error ? err.message : "не удалось получить ответ"}`,
-        timestamp: new Date(),
-        mode: activeMode,
-      };
-      setMessages((prev) => [...prev, errorMsg]);
-    } finally {
-      setIsTyping(false);
-    }
+    await attemptChat(modelToUse, false);
+    setIsTyping(false);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -203,22 +245,132 @@ ${searchContext}
     }
   };
 
-  const clearChat = () => {
-    setMessages([]);
-  };
+  const clearChat = () => setMessages([]);
 
   const selectedModelInfo = models.find((m) => m.id === selectedModel);
   const currentMode = TOOL_MODES.find((m) => m.id === toolMode)!;
-  const filteredModels = models.filter(
-    (m) =>
+
+  const filteredModels = models.filter((m) => {
+    const matchSearch =
       m.name.toLowerCase().includes(modelSearch.toLowerCase()) ||
-      m.id.toLowerCase().includes(modelSearch.toLowerCase())
-  );
+      m.id.toLowerCase().includes(modelSearch.toLowerCase());
+    if (modelFilter === "free") return matchSearch && m.prompt_price <= 0;
+    if (modelFilter === "paid") return matchSearch && m.prompt_price > 0;
+    return matchSearch;
+  });
+
+  const freeCount = models.filter((m) => m.prompt_price <= 0).length;
+  const paidCount = models.filter((m) => m.prompt_price > 0).length;
 
   return (
     <div className="h-[100dvh] flex bg-background overflow-hidden">
       {sidebarOpen && (
         <div className="fixed inset-0 bg-black/50 z-30 lg:hidden" onClick={() => setSidebarOpen(false)} />
+      )}
+
+      {showModelPicker && (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" onClick={() => setShowModelPicker(false)}>
+          <div
+            className="bg-card border border-border rounded-2xl w-full max-w-lg max-h-[80vh] flex flex-col animate-fade-in-scale"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="p-4 border-b border-border">
+              <div className="flex items-center justify-between mb-3">
+                <h2 className="text-base font-bold">Выбор модели</h2>
+                <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setShowModelPicker(false)}>
+                  <Icon name="X" size={16} />
+                </Button>
+              </div>
+              <div className="relative mb-3">
+                <Icon name="Search" size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                <input
+                  value={modelSearch}
+                  onChange={(e) => setModelSearch(e.target.value)}
+                  placeholder="Поиск по названию..."
+                  className="w-full pl-9 pr-4 py-2.5 text-sm rounded-xl border border-border bg-background focus:outline-none focus:ring-2 focus:ring-primary/30 transition-all"
+                  autoFocus
+                />
+              </div>
+              <div className="flex gap-1.5">
+                {([
+                  { id: "all" as ModelFilter, label: `Все (${models.length})` },
+                  { id: "free" as ModelFilter, label: `Бесплатные (${freeCount})` },
+                  { id: "paid" as ModelFilter, label: `Платные (${paidCount})` },
+                ]).map((f) => (
+                  <button
+                    key={f.id}
+                    onClick={() => setModelFilter(f.id)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                      modelFilter === f.id
+                        ? "bg-primary text-primary-foreground"
+                        : "text-muted-foreground hover:bg-secondary"
+                    }`}
+                  >
+                    {f.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-3 space-y-1 scrollbar-thin">
+              {modelsLoading ? (
+                <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground py-8">
+                  <Icon name="Loader" size={16} className="animate-spin" />
+                  Загружаю модели...
+                </div>
+              ) : filteredModels.length === 0 ? (
+                <div className="text-center text-sm text-muted-foreground py-8">
+                  Ничего не найдено
+                </div>
+              ) : (
+                filteredModels.map((m) => (
+                  <button
+                    key={m.id}
+                    onClick={() => { setSelectedModel(m.id); setShowModelPicker(false); setModelSearch(""); }}
+                    className={`w-full flex items-start gap-3 px-4 py-3 rounded-xl border text-left transition-all ${
+                      selectedModel === m.id
+                        ? "border-primary/50 bg-primary/5"
+                        : "border-border/50 bg-background hover:border-primary/20 hover:bg-secondary/30"
+                    }`}
+                  >
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <p className="text-sm font-medium truncate">{m.name}</p>
+                        {m.prompt_price <= 0 && (
+                          <span className="text-[9px] font-bold text-emerald-400 bg-emerald-400/10 px-1.5 py-0.5 rounded flex-shrink-0">FREE</span>
+                        )}
+                      </div>
+                      <p className="text-[11px] text-muted-foreground mt-0.5 truncate">{m.id}</p>
+                      <div className="flex items-center gap-3 mt-1">
+                        <span className="text-[10px] text-muted-foreground flex items-center gap-1">
+                          <Icon name="Layers" size={10} />
+                          {formatCtx(m.context_length)}
+                        </span>
+                        <span className="text-[10px] text-muted-foreground flex items-center gap-1">
+                          <Icon name="Coins" size={10} />
+                          {formatPrice(m.prompt_price)}
+                        </span>
+                      </div>
+                    </div>
+                    {selectedModel === m.id && (
+                      <Icon name="Check" size={16} className="text-primary mt-1 flex-shrink-0" />
+                    )}
+                  </button>
+                ))
+              )}
+            </div>
+
+            <div className="p-3 border-t border-border flex items-center justify-between">
+              <Button variant="outline" size="sm" className="gap-2 text-xs" onClick={loadModels} disabled={modelsLoading}>
+                <Icon name="RefreshCw" size={12} className={modelsLoading ? "animate-spin" : ""} />
+                Обновить
+              </Button>
+              <span className="text-[10px] text-muted-foreground">
+                {filteredModels.length} из {models.length}
+              </span>
+            </div>
+          </div>
+        </div>
       )}
 
       <aside className={`fixed lg:relative z-40 h-full w-72 bg-card border-r border-border flex flex-col transition-transform duration-300 ${sidebarOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"}`}>
@@ -264,6 +416,25 @@ ${searchContext}
           </div>
         </div>
 
+        <div className="px-3 py-2">
+          <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-widest px-4 mb-2">Модель</p>
+          <button
+            onClick={() => { setShowModelPicker(true); setSidebarOpen(false); }}
+            className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm bg-secondary/50 hover:bg-secondary border border-border/50 transition-all text-left"
+          >
+            <Icon name="Cpu" size={16} className="text-primary flex-shrink-0" />
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium truncate">{selectedModelInfo?.name || selectedModel}</p>
+              {selectedModelInfo && (
+                <p className="text-[10px] text-muted-foreground mt-0.5">
+                  {formatCtx(selectedModelInfo.context_length)} · {formatPrice(selectedModelInfo.prompt_price)}
+                </p>
+              )}
+            </div>
+            <Icon name="ChevronRight" size={14} className="text-muted-foreground flex-shrink-0" />
+          </button>
+        </div>
+
         <div className="mt-auto p-3 border-t border-border">
           <button
             onClick={() => { setShowSettings(!showSettings); setSidebarOpen(false); }}
@@ -288,12 +459,17 @@ ${searchContext}
           </div>
 
           <div className="flex items-center gap-2">
-            {selectedModelInfo && (
-              <div className="hidden sm:flex items-center gap-2 text-[11px] text-muted-foreground bg-secondary/50 px-3 py-1.5 rounded-lg">
-                <Icon name="Cpu" size={12} />
-                <span className="truncate max-w-[140px]">{selectedModelInfo.name}</span>
-              </div>
-            )}
+            <button
+              onClick={() => setShowModelPicker(true)}
+              className="flex items-center gap-2 text-[11px] text-muted-foreground bg-secondary/50 hover:bg-secondary px-3 py-1.5 rounded-lg transition-colors"
+            >
+              <Icon name="Cpu" size={12} />
+              <span className="truncate max-w-[120px] sm:max-w-[200px]">{selectedModelInfo?.name || selectedModel}</span>
+              {selectedModelInfo && selectedModelInfo.prompt_price <= 0 && (
+                <span className="text-[8px] font-bold text-emerald-400 bg-emerald-400/10 px-1 py-0.5 rounded">FREE</span>
+              )}
+              <Icon name="ChevronDown" size={12} />
+            </button>
             <Button
               variant="ghost"
               size="icon"
@@ -317,49 +493,28 @@ ${searchContext}
 
               <section className="space-y-3">
                 <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Модель ИИ</h3>
-                <div className="relative">
-                  <Icon name="Search" size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-                  <input
-                    value={modelSearch}
-                    onChange={(e) => setModelSearch(e.target.value)}
-                    placeholder="Поиск модели..."
-                    className="w-full pl-9 pr-4 py-2.5 text-sm rounded-xl border border-border bg-card focus:outline-none focus:ring-2 focus:ring-primary/30 transition-all"
-                  />
-                </div>
-                {modelsLoading ? (
-                  <div className="flex items-center gap-2 text-sm text-muted-foreground p-4">
-                    <Icon name="Loader" size={14} className="animate-spin" />
-                    Загружаю модели...
+                <button
+                  onClick={() => setShowModelPicker(true)}
+                  className="w-full flex items-center gap-3 px-4 py-4 rounded-xl border border-border bg-card hover:border-primary/30 transition-all text-left"
+                >
+                  <div className="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center flex-shrink-0">
+                    <Icon name="Cpu" size={20} className="text-primary" />
                   </div>
-                ) : (
-                  <div className="space-y-1 max-h-64 overflow-y-auto scrollbar-thin rounded-xl">
-                    {filteredModels.slice(0, 50).map((m) => (
-                      <button
-                        key={m.id}
-                        onClick={() => setSelectedModel(m.id)}
-                        className={`w-full flex items-start gap-3 px-4 py-3 rounded-xl border text-left transition-all ${
-                          selectedModel === m.id
-                            ? "border-primary/50 bg-primary/5 glow-blue"
-                            : "border-border bg-card hover:border-primary/20 hover:bg-secondary/50"
-                        }`}
-                      >
-                        <div className="flex-1 min-w-0">
-                          <p className="text-sm font-medium truncate">{m.name}</p>
-                          <p className="text-[11px] text-muted-foreground mt-0.5">
-                            {formatCtx(m.context_length)} ctx · {formatPrice(m.prompt_price)}
-                          </p>
-                        </div>
-                        {selectedModel === m.id && (
-                          <Icon name="Check" size={16} className="text-primary mt-0.5 flex-shrink-0" />
-                        )}
-                      </button>
-                    ))}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <p className="text-sm font-medium truncate">{selectedModelInfo?.name || selectedModel}</p>
+                      {selectedModelInfo && selectedModelInfo.prompt_price <= 0 && (
+                        <span className="text-[9px] font-bold text-emerald-400 bg-emerald-400/10 px-1.5 py-0.5 rounded flex-shrink-0">FREE</span>
+                      )}
+                    </div>
+                    {selectedModelInfo && (
+                      <p className="text-[11px] text-muted-foreground mt-0.5">
+                        {formatCtx(selectedModelInfo.context_length)} контекст · {formatPrice(selectedModelInfo.prompt_price)}
+                      </p>
+                    )}
                   </div>
-                )}
-                <Button variant="outline" size="sm" className="gap-2 text-xs" onClick={loadModels} disabled={modelsLoading}>
-                  <Icon name="RefreshCw" size={12} className={modelsLoading ? "animate-spin" : ""} />
-                  Обновить
-                </Button>
+                  <Icon name="ChevronRight" size={16} className="text-muted-foreground flex-shrink-0" />
+                </button>
               </section>
 
               <section className="space-y-3">
@@ -370,13 +525,33 @@ ${searchContext}
                     <span className="text-sm font-mono text-primary">{contextLimit}</span>
                   </div>
                   <input type="range" min={4} max={100} step={2} value={contextLimit} onChange={(e) => setContextLimit(Number(e.target.value))} className="w-full accent-primary" />
+                  <p className="text-[10px] text-muted-foreground">Сколько последних сообщений отправляется с запросом</p>
                 </div>
                 <div className="glass-card rounded-xl p-4 space-y-2">
                   <div className="flex items-center justify-between">
-                    <span className="text-sm">Макс. токенов</span>
+                    <span className="text-sm">Макс. токенов ответа</span>
                     <span className="text-sm font-mono text-primary">{maxTokens.toLocaleString()}</span>
                   </div>
                   <input type="range" min={512} max={32768} step={512} value={maxTokens} onChange={(e) => setMaxTokens(Number(e.target.value))} className="w-full accent-primary" />
+                  <p className="text-[10px] text-muted-foreground">Больше — длиннее ответы, меньше — быстрее</p>
+                </div>
+              </section>
+
+              <section className="space-y-3">
+                <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Автоматизация</h3>
+                <div className="glass-card rounded-xl divide-y divide-border">
+                  <div className="flex items-center justify-between p-4">
+                    <div className="flex-1 mr-3">
+                      <div className="flex items-center gap-2">
+                        <Icon name="RefreshCw" size={16} className="text-muted-foreground flex-shrink-0" />
+                        <span className="text-sm">Автопереключение на бесплатную</span>
+                      </div>
+                      <p className="text-[10px] text-muted-foreground mt-1 ml-6">
+                        Если платная модель не отвечает — переключится на бесплатную
+                      </p>
+                    </div>
+                    <Switch checked={autoFallbackFree} onCheckedChange={setAutoFallbackFree} />
+                  </div>
                 </div>
               </section>
 
@@ -386,7 +561,7 @@ ${searchContext}
                   <div className="flex items-center justify-between p-4">
                     <div className="flex items-center gap-3">
                       <Icon name="Hash" size={16} className="text-muted-foreground" />
-                      <span className="text-sm">Номера строк</span>
+                      <span className="text-sm">Номера строк в коде</span>
                     </div>
                     <Switch checked={showLineNumbers} onCheckedChange={setShowLineNumbers} />
                   </div>
@@ -413,11 +588,11 @@ ${searchContext}
                   </div>
                   <div className="flex justify-between">
                     <span className="text-muted-foreground">Моделей</span>
-                    <span>{models.length}</span>
+                    <span>{models.length} ({freeCount} бесплатных)</span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-muted-foreground">Версия</span>
-                    <span>3.0.0</span>
+                    <span>3.1.0</span>
                   </div>
                 </div>
               </section>
@@ -433,9 +608,20 @@ ${searchContext}
                       <Icon name="Zap" size={36} className="text-primary" />
                     </div>
                     <h2 className="text-2xl sm:text-3xl font-bold mb-2 gradient-text">Nexus AI</h2>
-                    <p className="text-sm text-muted-foreground mb-8 text-center max-w-md">
+                    <p className="text-sm text-muted-foreground mb-2 text-center max-w-md">
                       Чат, поиск в интернете, генерация кода и анализ — всё в одном месте
                     </p>
+                    <button
+                      onClick={() => setShowModelPicker(true)}
+                      className="text-xs text-muted-foreground hover:text-primary transition-colors mb-8 flex items-center gap-1.5"
+                    >
+                      <Icon name="Cpu" size={12} />
+                      {selectedModelInfo?.name || selectedModel}
+                      {selectedModelInfo && selectedModelInfo.prompt_price <= 0 && (
+                        <span className="text-[8px] font-bold text-emerald-400 bg-emerald-400/10 px-1 py-0.5 rounded">FREE</span>
+                      )}
+                      <Icon name="ChevronDown" size={12} />
+                    </button>
 
                     <div className="grid grid-cols-2 gap-3 w-full max-w-md">
                       {QUICK_ACTIONS.map((a) => (
@@ -519,7 +705,7 @@ ${searchContext}
                 </div>
 
                 <p className="text-[10px] text-muted-foreground text-center">
-                  Shift+Enter — перенос строки · {selectedModelInfo?.name || selectedModel}
+                  Shift+Enter — перенос · {selectedModelInfo?.name || selectedModel}
                 </p>
               </div>
             </div>
