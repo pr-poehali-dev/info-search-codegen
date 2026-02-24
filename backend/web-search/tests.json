@@ -7,24 +7,22 @@
       "expectedStatus": 200
     },
     {
-      "name": "Chat completion",
+      "name": "Search query",
       "method": "POST",
       "path": "/",
       "body": {
-        "messages": [{"role": "user", "content": "Say hello in one word"}],
-        "model": "google/gemini-2.0-flash-001",
-        "max_tokens": 256
+        "query": "Python programming"
       },
       "expectedStatus": 200,
-      "expectedBody": {"content": "string"},
+      "expectedBody": {"query": "string", "results": [], "total": 0},
       "bodyMatcher": "partial"
     },
     {
-      "name": "Empty messages returns error",
+      "name": "Empty query returns error",
       "method": "POST",
       "path": "/",
       "body": {
-        "messages": []
+        "query": ""
       },
       "expectedStatus": 400
     }

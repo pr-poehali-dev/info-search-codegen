@@ -24,7 +24,6 @@ function highlightLine(line: string, lang: string): JSX.Element[] {
   let key = 0;
 
   while (remaining.length > 0) {
-    // String literals
     const strMatch = remaining.match(/^(["'`])(?:(?!\1|\\).|\\.)*\1/);
     if (strMatch) {
       parts.push(<span key={key++} className="text-amber-300">{strMatch[0]}</span>);
@@ -32,7 +31,6 @@ function highlightLine(line: string, lang: string): JSX.Element[] {
       continue;
     }
 
-    // Comments
     const commentMatch = remaining.match(/^(\/\/.*|#.*|\/\*[\s\S]*?\*\/|<!--[\s\S]*?-->)/);
     if (commentMatch) {
       parts.push(<span key={key++} className="text-zinc-500 italic">{commentMatch[0]}</span>);
@@ -40,7 +38,6 @@ function highlightLine(line: string, lang: string): JSX.Element[] {
       continue;
     }
 
-    // Numbers
     const numMatch = remaining.match(/^\b\d+(\.\d+)?\b/);
     if (numMatch) {
       parts.push(<span key={key++} className="text-purple-400">{numMatch[0]}</span>);
@@ -48,14 +45,13 @@ function highlightLine(line: string, lang: string): JSX.Element[] {
       continue;
     }
 
-    // Keywords
     const wordMatch = remaining.match(/^\b[a-zA-Z_]\w*\b/);
     if (wordMatch) {
       const word = wordMatch[0];
       if (keywords.includes(word)) {
-        parts.push(<span key={key++} className="text-emerald-400 font-medium">{word}</span>);
+        parts.push(<span key={key++} className="text-blue-400 font-medium">{word}</span>);
       } else if (word[0] === word[0].toUpperCase() && word[0] !== word[0].toLowerCase()) {
-        parts.push(<span key={key++} className="text-sky-400">{word}</span>);
+        parts.push(<span key={key++} className="text-cyan-400">{word}</span>);
       } else {
         parts.push(<span key={key++} className="text-zinc-200">{word}</span>);
       }
@@ -63,7 +59,6 @@ function highlightLine(line: string, lang: string): JSX.Element[] {
       continue;
     }
 
-    // HTML tags angle brackets & attributes
     const tagMatch = remaining.match(/^[<>/=]/);
     if (tagMatch) {
       parts.push(<span key={key++} className="text-zinc-500">{tagMatch[0]}</span>);
@@ -71,7 +66,6 @@ function highlightLine(line: string, lang: string): JSX.Element[] {
       continue;
     }
 
-    // Operators & punctuation
     const opMatch = remaining.match(/^[{}()[\];:.,+\-*/%&|^~!?@$\\]/);
     if (opMatch) {
       parts.push(<span key={key++} className="text-zinc-400">{opMatch[0]}</span>);
@@ -99,24 +93,31 @@ const CodeBlock = ({ code, language, showLineNumbers = true }: CodeBlockProps) =
   const lang = language.toLowerCase().replace(/^(js|jsx)$/, "javascript").replace(/^(ts|tsx)$/, "typescript").replace(/^(py)$/, "python").replace(/^(rs)$/, "rust");
 
   return (
-    <div className="group relative rounded-lg border border-border bg-[hsl(0_0%_5%)] overflow-hidden animate-fade-in">
-      <div className="flex items-center justify-between px-4 py-2 border-b border-border">
-        <span className="text-xs font-mono text-muted-foreground uppercase tracking-wider">{language}</span>
+    <div className="group relative rounded-xl border border-border bg-[hsl(230_15%_5%)] overflow-hidden animate-fade-in-scale">
+      <div className="flex items-center justify-between px-4 py-2 border-b border-border/60 bg-secondary/30">
+        <div className="flex items-center gap-2">
+          <div className="flex gap-1">
+            <span className="w-2.5 h-2.5 rounded-full bg-red-500/50" />
+            <span className="w-2.5 h-2.5 rounded-full bg-yellow-500/50" />
+            <span className="w-2.5 h-2.5 rounded-full bg-green-500/50" />
+          </div>
+          <span className="text-[10px] font-mono text-muted-foreground uppercase tracking-wider ml-1">{language}</span>
+        </div>
         <button
           onClick={handleCopy}
-          className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+          className="flex items-center gap-1.5 text-[11px] text-muted-foreground hover:text-foreground transition-colors px-2 py-1 rounded-md hover:bg-secondary/50"
         >
-          <Icon name={copied ? "Check" : "Copy"} size={14} />
-          {copied ? "Скопировано" : "Копировать"}
+          <Icon name={copied ? "Check" : "Copy"} size={12} />
+          {copied ? "OK" : "Копировать"}
         </button>
       </div>
       <div className="overflow-x-auto scrollbar-thin">
-        <pre className="p-4 text-sm leading-relaxed">
+        <pre className="p-4 text-[13px] leading-relaxed font-mono">
           <code>
             {lines.map((line, i) => (
-              <div key={i} className="flex">
+              <div key={i} className="flex hover:bg-white/[0.02] -mx-4 px-4">
                 {showLineNumbers && (
-                  <span className="select-none text-zinc-600 w-8 text-right mr-4 flex-shrink-0">{i + 1}</span>
+                  <span className="select-none text-zinc-600 w-8 text-right mr-4 flex-shrink-0 text-xs leading-relaxed">{i + 1}</span>
                 )}
                 <span>{highlightLine(line, lang)}</span>
               </div>
