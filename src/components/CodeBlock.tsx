@@ -4,6 +4,7 @@ import Icon from "@/components/ui/icon";
 interface CodeBlockProps {
   code: string;
   language: string;
+  showLineNumbers?: boolean;
 }
 
 const KEYWORDS: Record<string, string[]> = {
@@ -71,7 +72,7 @@ function highlightLine(line: string, lang: string): JSX.Element[] {
     }
 
     // Operators & punctuation
-    const opMatch = remaining.match(/^[{}()\[\];:.,+\-*/%&|^~!?@$\\]/);
+    const opMatch = remaining.match(/^[{}()[\];:.,+\-*/%&|^~!?@$\\]/);
     if (opMatch) {
       parts.push(<span key={key++} className="text-zinc-400">{opMatch[0]}</span>);
       remaining = remaining.slice(1);
@@ -85,7 +86,7 @@ function highlightLine(line: string, lang: string): JSX.Element[] {
   return parts;
 }
 
-const CodeBlock = ({ code, language }: CodeBlockProps) => {
+const CodeBlock = ({ code, language, showLineNumbers = true }: CodeBlockProps) => {
   const [copied, setCopied] = useState(false);
 
   const handleCopy = async () => {
@@ -114,7 +115,9 @@ const CodeBlock = ({ code, language }: CodeBlockProps) => {
           <code>
             {lines.map((line, i) => (
               <div key={i} className="flex">
-                <span className="select-none text-zinc-600 w-8 text-right mr-4 flex-shrink-0">{i + 1}</span>
+                {showLineNumbers && (
+                  <span className="select-none text-zinc-600 w-8 text-right mr-4 flex-shrink-0">{i + 1}</span>
+                )}
                 <span>{highlightLine(line, lang)}</span>
               </div>
             ))}

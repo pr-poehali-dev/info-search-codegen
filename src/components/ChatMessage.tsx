@@ -8,9 +8,9 @@ export interface Message {
   timestamp: Date;
 }
 
-function parseContent(content: string): JSX.Element[] {
+function parseContent(content: string, showLineNumbers: boolean): JSX.Element[] {
   const parts: JSX.Element[] = [];
-  const codeRegex = /```(\w+)?\n([\s\S]*?)```/g;
+  const codeRegex = /```(\w+)?\n?([\s\S]*?)```/g;
   let lastIndex = 0;
   let match;
   let key = 0;
@@ -26,7 +26,7 @@ function parseContent(content: string): JSX.Element[] {
     }
     parts.push(
       <div key={key++} className="my-3">
-        <CodeBlock code={match[2].trim()} language={match[1] || "text"} />
+        <CodeBlock code={match[2].trim()} language={match[1] || "text"} showLineNumbers={showLineNumbers} />
       </div>
     );
     lastIndex = match.index + match[0].length;
@@ -43,7 +43,7 @@ function parseContent(content: string): JSX.Element[] {
   return parts;
 }
 
-const ChatMessage = ({ message }: { message: Message }) => {
+const ChatMessage = ({ message, showLineNumbers = true }: { message: Message; showLineNumbers?: boolean }) => {
   const isUser = message.role === "user";
 
   return (
@@ -66,7 +66,7 @@ const ChatMessage = ({ message }: { message: Message }) => {
             : "bg-card border border-border rounded-tl-sm"
         }`}
       >
-        {parseContent(message.content)}
+        {parseContent(message.content, showLineNumbers)}
         <span className="block text-[10px] mt-2 opacity-50">
           {message.timestamp.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}
         </span>

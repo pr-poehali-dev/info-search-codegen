@@ -1,0 +1,23 @@
+{
+  "tests": [
+    {
+      "name": "OPTIONS preflight",
+      "method": "OPTIONS",
+      "path": "/",
+      "expectedStatus": 200
+    },
+    {
+      "name": "Chat completion",
+      "method": "POST",
+      "path": "/",
+      "body": {
+        "messages": [{"role": "user", "content": "Write hello world in Python"}],
+        "model": "anthropic/claude-3.5-haiku",
+        "max_tokens": 512
+      },
+      "expectedStatus": 200,
+      "expectedBody": {"content": "string"},
+      "bodyMatcher": "partial"
+    }
+  ]
+}
